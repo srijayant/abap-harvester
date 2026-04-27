@@ -1,15 +1,13 @@
 name: SAP ABAP Knowledge Scraper
 
-# ── Trigger: manual button tap in GitHub Actions UI ────────────────────────
 on:
   workflow_dispatch:
     inputs:
       note:
-        description: "Optional note (e.g. 'first run', 'weekly refresh')"
+        description: "Optional note"
         required: false
         default: "manual run"
 
-# ── Permissions: needs to commit files back to the repo ───────────────────
 permissions:
   contents: write
 
@@ -17,27 +15,54 @@ jobs:
   scrape:
     name: Deep Scrape SAP ABAP Knowledge
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 hours max (overnight run)
+    timeout-minutes: 360
 
     steps:
 
-      # 1. Check out repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Set up Python
+      - name: Debug token
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "❌ GH_TOKEN is EMPTY — secret not injected"
+          else
+            echo "✓ GH_TOKEN is present (length: ${#GH_TOKEN})"
+            # Test it against GitHub API
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/rate_limit)
+            echo "GitHub API response code: $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Token is valid!"
+              curl -s \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/rate_limit | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+core=d['resources']['core']
+search=d['resources']['search']
+print(f'  Core:   {core[\"remaining\"]}/{core[\"limit\"]} remaining')
+print(f'  Search: {search[\"remaining\"]}/{search[\"limit\"]} remaining')
+"
+            else
+              echo "❌ Token invalid or expired (HTTP $STATUS)"
+            fi
+          fi
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      # 3. Install dependencies
       - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4 lxml
+        run: pip install requests beautifulsoup4 lxml
 
-      # 4. Run the scraper
       - name: Run scraper
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -45,33 +70,23 @@ jobs:
           echo "▶ Starting deep scrape at $(date -u)"
           python scraper.py
           echo "✅ Scrape complete at $(date -u)"
-          echo "Records collected:"
-          wc -l abap_knowledge.jsonl || echo "0"
+          wc -l abap_knowledge.jsonl || echo "0 records"
 
-      # 5. Show summary
       - name: Show output summary
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Output files:"
           ls -lh abap_knowledge.jsonl abap_knowledge_summary.md 2>/dev/null
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Summary:"
-          cat abap_knowledge_summary.md 2>/dev/null || echo "(no summary yet)"
+          cat abap_knowledge_summary.md 2>/dev/null || echo "(no summary)"
 
-      # 6. Commit results back to repo
       - name: Commit results to repo
         run: |
           git config user.name  "ABAP Harvester Bot"
           git config user.email "abap-harvester[bot]@users.noreply.github.com"
-
           git add abap_knowledge.jsonl abap_knowledge_summary.md
-
-          # Only commit if there are changes
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
             RECORDS=$(wc -l < abap_knowledge.jsonl)
-            git commit -m "🤖 ABAP knowledge harvest — ${RECORDS} records [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git commit -m "🤖 ABAP harvest — ${RECORDS} records [$(date -u '+%Y-%m-%d %H:%M UTC')]"
             git push
-            echo "✅ Committed and pushed to repo."
+            echo "✅ Pushed to repo."
           fi
