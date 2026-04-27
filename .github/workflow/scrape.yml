@@ -1,0 +1,77 @@
+name: SAP ABAP Knowledge Scraper
+
+# ── Trigger: manual button tap in GitHub Actions UI ────────────────────────
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note (e.g. 'first run', 'weekly refresh')"
+        required: false
+        default: "manual run"
+
+# ── Permissions: needs to commit files back to the repo ───────────────────
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    name: Deep Scrape SAP ABAP Knowledge
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 hours max (overnight run)
+
+    steps:
+
+      # 1. Check out repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 lxml
+
+      # 4. Run the scraper
+      - name: Run scraper
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          echo "▶ Starting deep scrape at $(date -u)"
+          python scraper.py
+          echo "✅ Scrape complete at $(date -u)"
+          echo "Records collected:"
+          wc -l abap_knowledge.jsonl || echo "0"
+
+      # 5. Show summary
+      - name: Show output summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Output files:"
+          ls -lh abap_knowledge.jsonl abap_knowledge_summary.md 2>/dev/null
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Summary:"
+          cat abap_knowledge_summary.md 2>/dev/null || echo "(no summary yet)"
+
+      # 6. Commit results back to repo
+      - name: Commit results to repo
+        run: |
+          git config user.name  "ABAP Harvester Bot"
+          git config user.email "abap-harvester[bot]@users.noreply.github.com"
+
+          git add abap_knowledge.jsonl abap_knowledge_summary.md
+
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            RECORDS=$(wc -l < abap_knowledge.jsonl)
+            git commit -m "🤖 ABAP knowledge harvest — ${RECORDS} records [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git push
+            echo "✅ Committed and pushed to repo."
+          fi
